@@ -1,0 +1,9 @@
+{
+  "id": "job-2026-eng-004",
+  "title": "Backend Engineer, Platform Infrastructure",
+  "location": "Helsinki, Finland (EU)",
+  "description": "We're hiring a backend engineer to build and operate the platform services behind our EU-hosted SaaS product. You'll design REST APIs, own PostgreSQL data models, and run workloads on Kubernetes, all within EU data-residency boundaries. The team values infrastructure-as-code and observable, well-documented systems over heroics.",
+  "must_have_skills": ["Python", "PostgreSQL", "Kubernetes", "REST API design"],
+  "nice_to_have_skills": ["Terraform", "Azure", "Kafka"],
+  "min_years_experience": 4
+}

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+app/data/decisions.json
+app/data/audit_log.jsonl
+Thumbs.db
+.DS_Store
+
+# Local Claude Code agent/skill tooling (ECC bundle) — personal dev tooling,
+# not part of the hackathon submission; hundreds of generic files unrelated
+# to this product.
+.claude/

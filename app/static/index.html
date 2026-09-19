@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sovereign Hiring Console</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="header-text">
+    <h1 id="job-title">Loading role…</h1>
+    <p id="job-location" class="job-location"></p>
+  </div>
+</header>
+
+<section class="sovereignty-banner">
+  <p>
+    <strong>Sovereignty:</strong> All data processed locally. No external API calls.
+    No data leaves this machine.
+  </p>
+  <details>
+    <summary>Architecture summary</summary>
+    <p>
+      This demo runs end-to-end on this machine using only the Python standard
+      library &mdash; there is no cloud call, no external API, and no network
+      egress for candidate data. The production target for this design keeps that
+      same guarantee at scale: all components sit in an EU Azure region behind
+      private networking (VNet + Private Link, no public endpoints), the scoring
+      workload runs in confidential compute, encryption keys are customer-managed
+      via Key Vault, and access is governed by Entra ID role-based access control
+      with an immutable audit trail. Candidate data never leaves the
+      organisation's own network boundary, in the demo or in production.
+    </p>
+  </details>
+</section>
+
+<nav class="tabs">
+  <button type="button" class="tab-btn active" data-tab="candidates">Candidates</button>
+  <button type="button" class="tab-btn" data-tab="audit">Audit Log</button>
+</nav>
+
+<main>
+  <section id="tab-candidates" class="tab-panel active">
+    <section class="bias-check" aria-labelledby="bias-check-heading">
+      <h2 id="bias-check-heading">Bias Check</h2>
+      <p class="section-hint">
+        Computed server-side from the unredacted records, used only to prove the
+        redaction did not leave a hidden gap between protected groups &mdash; never
+        to re-identify or re-rank anyone.
+      </p>
+      <div id="bias-check-content">Loading&hellip;</div>
+    </section>
+
+    <section class="candidates" aria-labelledby="candidates-heading">
+      <h2 id="candidates-heading">Candidates</h2>
+      <div id="candidate-list">Loading&hellip;</div>
+    </section>
+  </section>
+
+  <section id="tab-audit" class="tab-panel">
+    <h2>Audit Log</h2>
+    <p class="section-hint">
+      Every AI recommendation and every human decision, append-only, oldest events
+      last.
+    </p>
+    <div id="audit-log">Loading&hellip;</div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
