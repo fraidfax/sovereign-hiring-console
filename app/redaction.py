@@ -32,7 +32,9 @@ _PRONOUN_RE = re.compile(r"\b(?:" + "|".join(_PRONOUNS) + r")\b", re.IGNORECASE)
 _AGE_RE = re.compile(
     r"\b\d{1,3}[\s-]+years?[\s-]+old\b"
     r"|\baged\s+\d{1,3}\b"
-    r"|\bI\s*(?:'m|\s+am)\s+\d{1,3}\b",
+    # [''’]? (not a bare ') so both a straight apostrophe and the curly
+    # ’ that most phone/OS keyboards auto-substitute for "I'm" are caught.
+    r"|\bI\s*(?:['’]m|\s+am)\s+\d{1,3}\b",
     re.IGNORECASE,
 )
 

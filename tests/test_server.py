@@ -137,6 +137,48 @@ class ServerTestCase(unittest.TestCase):
         self.assertEqual(headers.get("X-Frame-Options"), "DENY")
         self.assertIn("default-src 'self'", headers.get("Content-Security-Policy", ""))
 
+    # -- the headline claim: PII never reaches the client -------------------
+    def test_candidates_response_never_contains_pii_field_names_or_values(self):
+        # This is the pitch's core claim ("show, not just claim, that PII
+        # never reaches the scorer/client") checked at the actual HTTP
+        # response boundary, not just against redact_candidate() in
+        # isolation — a future edit that reintroduced a PII field into
+        # _candidate_record()'s dict merge would be caught here.
+        #
+        # Note: the record legitimately NAMES stripped fields in
+        # "removed_fields" (e.g. the string "full_name") to prove what was
+        # removed — that's the feature, not a leak. What must never happen is
+        # a PII field appearing as an actual KEY inside redacted_profile, or
+        # any candidate's real PII VALUE appearing anywhere in the response.
+        from app import redaction
+
+        real_candidates = json.loads(server.CANDIDATES_PATH.read_text(encoding="utf-8"))
+        _, body, _ = self._get("/api/candidates")
+        raw_response = json.dumps(body)
+
+        for record in body:
+            profile_keys = set(record["redacted_profile"].keys())
+            leaked_keys = profile_keys & set(redaction.PII_FIELDS)
+            self.assertFalse(
+                leaked_keys, f"candidate {record['id']}'s redacted_profile still has key(s) {leaked_keys}"
+            )
+
+        # gender/nationality are excluded here: they're short, common English
+        # words ("Norwegian", "male") that can coincidentally appear in a
+        # candidate's own legitimate, non-PII free text (e.g. "a Norwegian
+        # energy provider" describing an employer) without that being a
+        # redaction leak — unlike an email, phone number, address, or DOB,
+        # which are specific enough that any appearance would be a real leak.
+        unambiguous_pii_fields = [f for f in redaction.PII_FIELDS if f not in ("gender", "nationality")]
+        for candidate in real_candidates:
+            for field in unambiguous_pii_fields:
+                value = candidate.get(field)
+                if isinstance(value, str) and value:
+                    self.assertNotIn(
+                        value, raw_response,
+                        f"candidate {candidate['id']}'s {field}={value!r} leaked into the API response",
+                    )
+
     # -- bias-check never exposes a single-candidate score -----------------
     def test_bias_check_never_returns_a_group_smaller_than_three(self):
         _, bias, _ = self._get("/api/bias-check")

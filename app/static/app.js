@@ -31,14 +31,22 @@ function clear(node) {
 async function fetchJson(url, opts) {
   const res = await fetch(url, opts);
   let body = null;
+  let parseFailed = false;
   try {
     body = await res.json();
   } catch (_err) {
-    body = null;
+    parseFailed = true;
   }
   if (!res.ok) {
     const message = (body && (body.error || body.message)) || res.statusText || 'Request failed';
     throw new Error(message);
+  }
+  if (parseFailed) {
+    // A 200 with unparseable JSON is a real server-side bug, not "no data
+    // yet" — throwing here (instead of silently returning null) keeps every
+    // caller's existing error handling instead of letting this look like a
+    // benign empty/loading state.
+    throw new Error(`${url} returned a 200 response that was not valid JSON`);
   }
   return body;
 }
@@ -219,8 +227,14 @@ function renderDecisionMeta(cand) {
 
 function renderDecisionArea(cand, rank) {
   const area = el('div', { className: 'decision-area' });
-  const approveBtn = el('button', { className: 'btn approve-btn', attrs: { type: 'button' }, text: 'Approve' });
-  const rejectBtn = el('button', { className: 'btn reject-btn', attrs: { type: 'button' }, text: 'Reject' });
+  const approveBtn = el('button', {
+    className: 'btn approve-btn', text: 'Approve',
+    attrs: { type: 'button', 'aria-label': `Approve candidate ${cand.id}` },
+  });
+  const rejectBtn = el('button', {
+    className: 'btn reject-btn', text: 'Reject',
+    attrs: { type: 'button', 'aria-label': `Reject candidate ${cand.id}` },
+  });
 
   const reasonBox = el('div', { className: 'reason-box' });
   reasonBox.hidden = true;
@@ -233,8 +247,14 @@ function renderDecisionArea(cand, rank) {
     className: 'reason-input',
     attrs: { rows: '2', id: reasonInputId },
   });
-  const confirmBtn = el('button', { className: 'btn confirm-reject-btn', attrs: { type: 'button' }, text: 'Confirm reject' });
-  const cancelBtn = el('button', { className: 'btn cancel-btn', attrs: { type: 'button' }, text: 'Cancel' });
+  const confirmBtn = el('button', {
+    className: 'btn confirm-reject-btn', text: 'Confirm reject',
+    attrs: { type: 'button', 'aria-label': `Confirm reject for candidate ${cand.id}` },
+  });
+  const cancelBtn = el('button', {
+    className: 'btn cancel-btn', text: 'Cancel',
+    attrs: { type: 'button', 'aria-label': `Cancel reject for candidate ${cand.id}` },
+  });
   reasonBox.appendChild(label);
   reasonBox.appendChild(textarea);
   reasonBox.appendChild(el('div', { className: 'reason-actions' }, [confirmBtn, cancelBtn]));
@@ -320,9 +340,18 @@ async function submitDecision(candidateId, decision, reason) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    await Promise.all([loadCandidates(), loadAuditLog()]);
   } catch (err) {
     alert(`Could not record decision: ${err.message}`);
+    return;
+  }
+  // The decision itself is already saved at this point — a failure here is
+  // only a stale view, not a lost decision, so it must not be reported with
+  // the same "could not record decision" message (which would wrongly
+  // invite the recruiter to resubmit and double-log the same decision).
+  try {
+    await Promise.all([loadCandidates(), loadAuditLog()]);
+  } catch (err) {
+    alert(`Decision recorded, but the view failed to refresh (${err.message}). Reload the page to see it.`);
   }
 }
 

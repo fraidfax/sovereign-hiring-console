@@ -43,7 +43,9 @@ MAX_BODY_BYTES = 64 * 1024
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "Content-Security-Policy": "default-src 'self'",
+    # img-src allows data: for the inline SVG favicon only; everything else
+    # (scripts, styles, fetch targets) stays same-origin only.
+    "Content-Security-Policy": "default-src 'self'; img-src 'self' data:",
 }
 
 # `server.py` can be launched either as `py -3 -m app.server` (repo root on
@@ -272,22 +274,42 @@ class Handler(BaseHTTPRequestHandler):
         reason_value = reason.strip() if reason_ok else None
         decision_status = "approved" if decision == "approve" else "rejected"
 
-        ranked_entry = next(r for r in STATE.ranked if r["id"] == candidate_id)
+        ranked_entry = next((r for r in STATE.ranked if r["id"] == candidate_id), None)
+        if ranked_entry is None:
+            # STATE.ranked and STATE.candidates_by_id are built together in
+            # load_state() and must stay in lockstep; reaching here means that
+            # invariant broke, which is a bug worth a loud, specific failure
+            # rather than a generic StopIteration further down.
+            return self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
+
+        decision_record = {
+            "decision_status": decision_status,
+            "decision_reason": reason_value,
+            "decision_actor": actor,
+        }
         with _lock:
-            STATE.decisions[candidate_id] = {
-                "decision_status": decision_status,
-                "decision_reason": reason_value,
-                "decision_actor": actor,
-            }
-            _write_json(DECISIONS_PATH, STATE.decisions)
-            audit.log_event("human_decision", {
-                "candidate_id": candidate_id,
-                "decision": decision,
-                "actor": actor,
-                "reason": reason_value,
-                "override": is_override,
-                "score": ranked_entry["score"],
-            }, _now_iso())
+            # All-or-nothing: write the new decisions.json, then the audit
+            # log entry, and only then update in-memory STATE. If the audit
+            # write fails, roll decisions.json back to its previous content
+            # before re-raising, so a 500 never leaves disk state, audit log,
+            # and in-memory state disagreeing about whether this decision
+            # actually happened.
+            previous_decisions = STATE.decisions
+            pending_decisions = {**previous_decisions, candidate_id: decision_record}
+            _write_json(DECISIONS_PATH, pending_decisions)
+            try:
+                audit.log_event("human_decision", {
+                    "candidate_id": candidate_id,
+                    "decision": decision,
+                    "actor": actor,
+                    "reason": reason_value,
+                    "override": is_override,
+                    "score": ranked_entry["score"],
+                }, _now_iso())
+            except Exception:
+                _write_json(DECISIONS_PATH, previous_decisions)
+                raise
+            STATE.decisions = pending_decisions
 
         self._send_json(HTTPStatus.OK, _candidate_record(ranked_entry))
 

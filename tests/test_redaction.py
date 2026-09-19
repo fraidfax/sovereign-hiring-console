@@ -66,6 +66,21 @@ class TestRedactCandidate(unittest.TestCase):
         ]
         self.assertTrue(pronoun_spans, "expected at least one pronoun span to be recorded")
 
+    def test_curly_apostrophe_age_mention_is_scrubbed(self):
+        # Regression: most phone/OS keyboards auto-substitute a curly
+        # apostrophe (’) for "I'm" — a straight-quote-only regex would
+        # silently let the age through, which is exactly what happened here
+        # before this was fixed (found by a live security review probe).
+        candidate = _candidate(cover_letter_excerpt="I’m 34 and excited about this role.")
+        result = redact_candidate(candidate)
+        redacted = result["redacted"]
+        self.assertNotRegex(redacted["cover_letter_excerpt"], r"\b34\b")
+        age_spans = [
+            s for s in result["scrubbed_spans"]
+            if s["field"] == "cover_letter_excerpt" and any(c.isdigit() for c in s["original"])
+        ]
+        self.assertTrue(age_spans, "expected the curly-apostrophe age mention to be scrubbed")
+
     def test_no_free_text_leakage_still_reports_removed_fields(self):
         clean = _candidate(
             work_history="Built distributed systems and mentored junior engineers on call rotations.",
