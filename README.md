@@ -1,135 +1,349 @@
-# Sovereign Hiring Console
+# Sovereign Hiring Agent — Data Sovereignty + Human Veto for AI Recruitment
 
-A recruiter-facing hiring app that ranks candidates using a deterministic scoring engine after stripping personally identifying information. Nothing is auto-decided: every candidate's final status requires a named human actor, rejecting a top-ranked candidate requires a written reason, and every AI recommendation and human decision is recorded in an append-only audit log. The demo runs entirely on one machine with Python standard library only — no cloud call, no external API, no data egress.
+**An AI agent screens job candidates with PII redaction and a human approval gate on every decision — no candidate decision is ever final without a human reviewer.**
 
-## How to run it
-
-This is a Python 3 stdlib-only app with no pip install step, designed so judges can run it offline.
-
-```bash
-python app/server.py
-```
-
-The server listens on `http://localhost:8080` by default (bound to `127.0.0.1` only — nothing else on your network can reach it). Open that URL in a browser.
-
-To let other devices on your network reach it (e.g. judges on the same WiFi) — safe here since the dataset is synthetic, but note there is no authentication on this demo server:
-```bash
-python app/server.py --host 0.0.0.0 --port 8080
-```
-
-That's it. The first load takes less than a second. No external network calls happen at any point, even if your machine is offline.
-
-## How this meets the CHALLENGE.md bar
-
-### The four fixed requirements:
-
-1. **Where the data lives** → Every candidate record, decision, and audit event is a JSON file under `app/data/` on local disk. `app/server.py` never reads or writes to any other location. Proof: inspect `/api/candidates` in the browser to see the scoring + redaction, or use `ls app/data/` to see the actual files.
-
-2. **One concrete privacy/security technique** → **PII redaction ("blind screening")**: before the scoring engine ever sees a candidate, `app/redaction.py` strips name, email, phone, address, DOB, gender, nationality, photo entirely. It then regex-scrubs the free-text fields (work history, cover letter) to remove the candidate's name again, standalone age mentions ("32 years old"), and gendered pronouns (he/him/she/her/they/them). The UI shows a `<details>` expandable on each candidate card ("Redacted fields") that displays the before/after of each scrubbed span so the claim is visible and verifiable, not asserted. Maps to **GDPR Article 5 (data minimisation)**.
-
-3. **Human in the loop for at least one critical decision** → Nothing here is auto-decided. Every candidate starts with `decision_status: "pending"`. The `/api/decide` endpoint (called by the "Approve" and "Reject" buttons) is the only code path that changes that status, and it requires: a named human actor (never null or empty), and if the candidate is in the top 3 by score and being rejected, a written reason must accompany it. The UI enforces this: buttons appear for both decisions, a reason field shows conditionally when required (override), and nothing posts to the server without both fields filled. Proof: click "Reject" on a high-ranked candidate and try to submit without a reason — it fails client-side and server-side.
-
-4. **The regulation you're designing for** → **GDPR Articles 5 (lawfulness, fairness, transparency, data minimisation) and 22 (automated decisions), plus EU AI Act Annex III and Article 14 (high-risk employment AI requires human oversight)**. The bias-check panel (on the "Candidates" tab) shows average scores grouped by gender, with a one-line statement of spread, proving the redaction removed the ranking's direct dependency on protected attributes. Groups smaller than 3 (a k-anonymity floor) are combined into one bucket with their average withheld — an earlier version of this panel published a size-1 group's exact average, which *is* that specific candidate's exact score and would have re-identified their gender; `app/audit.py`'s `bias_check()` and `tests/test_audit.py` now both guard against that. The audit log (tab 2) records every AI recommendation and every human decision with actor, reason, and timestamp.
-
-### The four judging criteria:
-
-1. **Solves a real, believable problem** → High-risk employment AI (hiring decisions can alter someone's livelihood) must be explainable, auditable, and under human control. This demo proves that all three are possible without sacrificing sovereignty. Judges can see the code, click through decisions, and read the audit trail.
-
-2. **Can you show sensitive data stayed under control?** → Yes. The demo has no outbound network calls (inspect `app/server.py` for all I/O — it only reads/writes the `app/data/` directory, the codebase, and `/dev/null`). No cloud SDK, no HTTP client imports, no ability to exfiltrate data even if someone tried. Run it offline to prove it works without any network.
-
-3. **Address one privacy/security technique AND one human oversight moment** → Privacy: redaction + scrubbing (above). Human oversight: decision endpoint (above). Audit proof: `/api/audit-log` shows the append-only events; the UI tabs between candidates and the audit trail so judges can trace a decision back to the AI recommendation.
-
-4. **Is the demo working end-to-end?** → Yes. Load the page, see the candidate list ranked by score with redacted fields and explanations visible, click bias-check to see that group averages have minimal spread, expand the audit tab to see the AI recommendations and human decisions, use the Approve/Reject buttons to make a decision (with override reason if needed), and reload the page to confirm the decision persisted.
-
-## Architecture: local proof-of-concept for a sovereign target design
-
-This working demo runs on one machine with flat JSON files and zero network calls, so it can be judged without any Azure subscription or cloud account.
-
-**See `docs/architecture.md`** for the production target: a sovereign Azure environment in the EU Data Boundary with confidential compute, customer-managed encryption keys, private networking (no public endpoints), Entra ID RBAC, immutable audit storage, and Microsoft Purview data classification. That architecture is a design deliverable showing how the same sovereignty and transparency guarantees scale to production. The demo is a proof-of-concept that the core guarantees (no data egress, human decision control, explainable scoring) are technically achievable — the Azure layer adds defense-in-depth (encryption, isolation, formal governance) around the same logic.
-
-## What's deliberately out of scope
-
-- **No external LLM call**: This environment has no Azure/OpenAI API key, and sending HR data to a remote LLM would undercut the sovereignty pitch. Instead, the scoring engine is a deterministic template-explained rubric: 100% explainable, reproducible, auditable, and local. Per CHALLENGE.md, this is a strength, not a compromise — it is framed explicitly in the pitch.
-
-- **No authentication on the demo server**: The UI is for local judging in a controlled environment. A recruiter using this in production would authenticate via Entra ID (as shown in the architecture target). The demo assumes a trusted judge on a trusted network.
-
-- **`decisions.json` is a single flat file, not a real datastore**: writes are lock-protected and atomic (temp file + `Path.replace()`; verified safe under 14 concurrent `POST /api/decide` requests in `tests/test_server.py`), so it won't corrupt — but it's still one file with no query/index/multi-tenant support. Production would use a real store (Azure Storage, Cosmos DB, or PostgreSQL). The code has an inline comment (`ponytail:`) noting this ceiling.
-- **No rate limiting**: a single recruiter clicking buttons doesn't need it for this demo; a production deployment behind the Azure architecture in `docs/architecture.md` would add it at the gateway.
-
-## How to run the tests
-
-All tests use Python's stdlib `unittest` framework; no pytest or external dependencies needed.
-
-```bash
-python -m unittest discover tests -v
-```
-
-This runs all tests in `tests/test_*.py` (28 total):
-- `test_scoring.py` — 6 tests covering the rubric engine (full match, no match, missing skills, determinism, experience scaling, empty requirements)
-- `test_redaction.py` — 5 tests covering PII removal, name/age/pronoun scrubbing, and span recording
-- `test_audit.py` — 9 tests covering append-only logging, file creation, read order, and bias-check aggregation including the k-anonymity suppression (single-group, two-singleton-groups, and mixed-size scenarios)
-- `test_server.py` — 8 integration tests that boot a real server on an ephemeral port and exercise it over real HTTP: every `/api/decide` validation branch (missing actor, invalid decision, unknown id, missing override reason), a persisted decision surviving a re-fetch, the security headers on every JSON response, and that `/api/bias-check` never returns a group smaller than 3
-
-Example output:
-```
-test_appends_and_returns_record (tests.test_audit.TestLogEvent) ... ok
-test_groups_below_minimum_size_never_expose_an_individual_score (tests.test_audit.TestBiasCheck) ... ok
-test_full_match_scores_close_to_100 (tests.test_scoring.ScoreCandidateTests) ... ok
-test_json_responses_carry_security_headers (tests.test_server.ServerTestCase) ... ok
-...
-Ran 28 tests in 4.5s
-
-OK
-```
-
-## Implementation details
-
-**Core modules:**
-- `app/server.py` — Stdlib HTTP server (`http.server`), routes all endpoints, integrates redaction/scoring/audit, serves static HTML/JS/CSS. Registers AI recommendations once per process lifetime (idempotent), logs human decisions atomically.
-- `app/redaction.py` — Pure function redacting PII fields and regex-scrubbing free text for names, ages, pronouns. Returns the redacted fields, list of removed fields, and list of scrubbed spans with before/after for UI display.
-- `app/scoring.py` — Pure function (deterministic, no I/O, no randomness) scoring a redacted candidate against a job using a fixed rubric: 60 pts for must-have skills (evenly split), 20 pts for nice-to-have (evenly split), 20 pts for experience (scaled linearly if below bar). Produces a score (0–100, 1 decimal), explanation (template-generated sentence naming exactly which skills matched/missed), and matched/missing lists.
-- `app/audit.py` — Append-only audit log (JSONL, one record per line), bias-check aggregate (computes per-group average scores and max spread from unredacted data server-side only, never re-ranked, never sent to client per-candidate).
-
-**Data:**
-- `app/data/job.json` — One job posting (Backend Engineer, Helsinki, 4 yrs experience, 4 must-have + 3 nice-to-have skills).
-- `app/data/candidates.json` — 14 synthetic candidates with varied skill matches and experience levels (0–10 yrs), drawn from real EU/global backgrounds. Skills and experience vary enough that the ranking is not trivial; at least 2–3 candidates fall within 5 points of each other, so override judgments matter.
-- `app/data/decisions.json` — Runtime-written, one record per candidate with `decision_status` ("pending"/"approved"/"rejected"), `decision_reason` (null unless an override), and `decision_actor` (the human who decided).
-- `app/data/audit_log.jsonl` — Runtime-written, append-only. Each line is one JSON record: `{"ts": "2026-09-20T...", "event": "ai_recommendation"|"human_decision", ...}`. Used by the audit tab and as the immutable record per GDPR Art. 12 and EU AI Act Art. 12.
-
-**Frontend:**
-- `app/static/index.html` — Semantic HTML, tabbed interface (Candidates / Audit Log).
-- `app/static/app.js` — Vanilla JS, no framework, no build step, no CDN. Fetches `/api/job`, `/api/candidates`, `/api/bias-check`, `/api/audit-log`; calls `POST /api/decide` to record decisions. Renders candidate cards with score, explanation, matched/missing skills, expandable "Redacted fields" diff, and Approve/Reject buttons. Conditional reason field for overrides.
-- `app/static/styles.css` — Simple, readable styling. Focus on clarity and accessibility (no fancy animations, high contrast, clear touch targets).
-
-## Code locations for proof points
-
-| Claim | File / Endpoint |
-|-------|---|
-| PII redacted before scoring | `/app/redaction.py` (function `redact_candidate`) → `/api/candidates` shows `removed_fields` and `scrubbed_spans` for every candidate |
-| Scoring is deterministic | `/app/scoring.py` (function `score_candidate` is pure, no I/O, no randomness) |
-| Explanation is traceable | `/app/scoring.py` lines 104–106 (`_build_explanation`); every number in the score appears in the sentence |
-| Human decision required | `app/server.py`'s `Handler._post_decide` (validates actor and override reason) → `/api/decide` endpoint enforces |
-| Audit trail is immutable | `app/audit.py` (`log_event` appends, never overwrites; `read_audit_log` skips a malformed line rather than failing the whole read) → `/api/audit-log` returns oldest first |
-| Bias check never re-identifies a small group | `app/audit.py`'s `bias_check` (groups below `MIN_GROUP_SIZE=3` are combined and their average withheld) → `/api/bias-check` endpoint; `tests/test_server.py::test_bias_check_never_returns_a_group_smaller_than_three` asserts it live |
-| Request bodies are size-capped | `app/server.py`'s `MAX_BODY_BYTES` (64 KB) checked before `rfile.read()` in `_post_decide` |
-| Responses carry defensive security headers | `app/server.py`'s `SECURITY_HEADERS` (`nosniff`, `X-Frame-Options: DENY`, same-origin CSP) sent on every JSON and static response |
-| No outbound calls | `grep -r "socket\|urllib\|http\|requests\|httpx" app/` returns nothing but `urllib.parse`/`http.server` (stdlib routing, not a client); only file I/O and stdout |
-
-## Candidate data note
-
-All 14 candidates are synthetic (invented names, emails, addresses). The scenario is realistic (Backend Engineer for an EU-based fintech/SaaS product), but the individuals do not exist. The data is diverse in nationality, gender, experience level, and skill mix to make the ranking meaningful and the override feature testable.
-
-## Appendix: decision flow
-
-1. Recruiter views candidate list (sorted by score desc).
-2. Recruiter reads redacted profile, explanation, matched/missing skills, bias-check context.
-3. Recruiter decides (Approve / Reject).
-4. If rejecting a top-3 candidate, a reason is required (server-side + client-side validation).
-5. POST `/api/decide` with `{candidate_id, decision, actor, reason}`.
-6. Server logs `human_decision` event to audit log, persists decision to `decisions.json`.
-7. UI updates to show decision status and reason.
-8. Recruiter can switch to Audit tab to see all AI recommendations and human decisions in one timeline.
+This is a working end-to-end proof of concept demonstrating secure, sovereign AI use in high-risk employment settings. The agent ranks candidates using deterministic scoring and Claude reasoning, but the hiring decision always remains under human control. All candidate data stays on the local machine; sensitive information is stripped before any external model call. Bias is tracked and suppressed per k-anonymity rules to prevent re-identification of small demographic groups.
 
 ---
 
-**Built for the AaltoAI 2026 hackathon challenge**: "What becomes possible when trust is built in?" — Microsoft Data Sovereignty track.
+## How to Run It
+
+### Prerequisites
+
+- **Python 3.10+** with `pip` (install dependencies: `pip install -r backend/requirements.txt` from the `backend/` directory)
+- **Node.js 18+** with `npm` (install frontend deps: `npm install` from the `frontend/` directory)
+- **Claude CLI** installed and authenticated (`claude auth status` should show an active session; this app uses your existing Claude Pro subscription, not a paid API key)
+
+### One-Command Launch
+
+```bash
+python run.py
+```
+
+This starts the FastAPI backend (port 8000) and Next.js frontend (port 3000) as subprocesses, waits for both to come up, and opens your browser to http://localhost:3000. Press Ctrl+C to stop both servers.
+
+### Manual Launch (Alternative)
+
+**Terminal 1** — Backend:
+```bash
+cd backend
+python -m uvicorn app.main:app --port 8000
+```
+
+**Terminal 2** — Frontend:
+```bash
+cd frontend
+npm run dev
+```
+
+Then open http://localhost:3000 in your browser.
+
+---
+
+## Why the Claude CLI Instead of an API Key?
+
+This demo has no `ANTHROPIC_API_KEY` because it deliberately uses your existing Claude Pro subscription (via OAuth). The CLI approach makes the reasoning call one consolidated call per candidate instead of a 5-round-trip tool-use loop:
+
+- **One-shot design**: Every reasoning stage (redaction note, score interpretation, bias reflection, recommendation) is captured in one structured JSON request to the Claude CLI.
+- **Cost/latency tradeoff**: A live 5-round tool-use loop would be ~70 CLI calls for 14 candidates (many minutes of latency, significant subscription quota burn). One call per candidate is ~2–3s each and minimal quota impact.
+- **Sovereignty still held**: The prompt never contains raw PII — only the already-redacted profile. The single Claude call only receives anonymized data plus aggregate bias stats.
+
+This is disclosed in the UI (the data-residency banner says "Claude receives no PII fields") and in the pitch deck, not hidden.
+
+---
+
+## The Agent Architecture
+
+### Five Real Tools (All Deterministic, All Synchronous)
+
+1. **`redact_pii(candidate)`** — Strips 8 PII fields (name, email, phone, address, DOB, gender, nationality, photo) and scrubs mentions of those data points (plus ages and pronouns) from free-text fields (work history, cover letter, education). Returns the redacted profile plus a detailed log of what was removed.
+
+2. **`score_candidate(redacted_profile, job)`** — Applies a deterministic 60/20/20 rubric:
+   - Must-have skills: 60 points
+   - Nice-to-have skills: 20 points
+   - Years of experience: 20 points
+   Returns the numerical score and a human-readable explanation of every component.
+
+3. **`bias_check(scored_candidates, unredacted_data)`** — Compares average scores across demographic groups (gender, disclosed/undisclosed). **Applies k-anonymity**: groups smaller than 3 people are combined into one "suppressed" bucket whose average is not computed at all (withheld, not hidden). This prevents re-identification of individuals in tiny groups.
+
+4. **`flag_for_approval(candidate_id, recommendation, reasoning)`** — Marks the candidate `status="pending_review"` and attaches the agent's recommendation and reasoning. This is the only function that moves a candidate out of "processing"; nothing is ever auto-approved or auto-rejected.
+
+5. **`log_to_audit(event_type, payload, timestamp)`** — Appends every decision to an immutable JSONL audit log on disk. Two event types: `ai_recommendation` (agent suggests approve/reject) and `human_decision` (human accepts or overrides, with the actor's name and reason if overriding).
+
+### Reasoning Loop Per Candidate
+
+1. **Redact & Score** (runs serially for all candidates):
+   - redact_pii() → real-time SSE event to frontend
+   - score_candidate() → real-time SSE event
+
+2. **Bias Check** (once for the whole cohort):
+   - bias_check() on all scored candidates → suppresses small groups, calculates spread
+   - SSE event to frontend
+
+3. **Brain Reasoning** (bounded concurrency: max 3 simultaneous Claude calls):
+   - For each candidate, build a one-shot prompt containing the redacted profile, score result, and bias statement
+   - Call `claude -p <prompt> --output-format json` from a clean temp directory
+   - Parse the JSON reply for redaction note, score note, bias note, recommendation, and reasoning
+   - On any failure (timeout, malformed JSON, CLI exit nonzero), fall back to a clearly-labeled automatic recommendation (score >= 60 → approve, else reject)
+   - Emit redaction/score/bias narration to frontend (one SSE event per note)
+   - Call flag_for_approval() to set status="pending_review"
+   - Log the recommendation to audit trail
+   - Emit recommendation SSE event to frontend
+
+### Event Stream Shape
+
+Every event on the SSE stream has this structure:
+```json
+{
+  "type": "tool_call" | "tool_result" | "narration" | "recommendation" | "done",
+  "candidate_id": "cand-XX" | null,
+  "tool": "redact_pii" | "score_candidate" | "bias_check" | "brain" | null,
+  "detail": {},
+  "ts": "2026-09-20T12:34:56.789Z"
+}
+```
+
+The frontend subscribes to this stream and reconstructs a live view of which candidates are being processed, their scores, the agent's narration, and its recommendation.
+
+---
+
+## How This Meets the Hard Requirements
+
+### 1. Show Where the Data Lives
+**Component**: `frontend/app/components/DataResidencyBanner.tsx`  
+**Endpoint**: `GET /api/data-residency`
+
+The banner shows:
+- Location: "This machine — localhost, no cloud deployment"
+- External services: Claude (reasoning narration only), labeled "0 PII fields sent"
+- Counter: "0 requests carrying personal data have left this boundary"
+
+### 2. Prove One Concrete Privacy/Security Technique
+**Component**: `frontend/app/components/RedactionReveal.tsx`  
+**Tool**: `backend/app/tools.py::redact_pii`
+
+Before/after diff showing:
+- **Stripped fields**: full_name, email, phone, address, date_of_birth, gender, nationality, photo_placeholder
+- **Scrubbed free text**: name mentions, ages, pronouns redacted from work history, cover letter, education
+
+Click "PII redaction — before / after" to expand and see exactly what was removed.
+
+**Test that proves it**: `backend/tests/test_tools.py::test_pii_fields_fully_removed` and `test_name_age_and_pronoun_mentions_are_scrubbed_in_free_text`
+
+### 3. Human in the Loop on Every Critical Decision
+**Component**: `frontend/app/components/ApprovalGate.tsx`  
+**Endpoint**: `POST /api/decide`
+
+For every candidate:
+- Agent makes a recommendation (approve or reject)
+- Status moves to "pending_review"
+- Human reviewer enters their name, then:
+  - **Accept**: One click, no reason required (the agent's reasoning is on screen)
+  - **Override**: Requires a non-empty written reason, enforced client and server side
+- Decision is recorded with actor name, timestamp, reason (if override), and is_override flag
+- Audit log stores both the agent's recommendation and the human's decision
+
+Override examples shown on screen explain why this path is accountable.
+
+### 4. Name the Regulation You're Designing For
+**Component**: `frontend/app/components/RegulationBadge.tsx`
+
+Two badges visible in the approval-gate section:
+- **EU AI Act, Article 6**: "Classifies employment-related AI as high-risk, which triggers a legal duty for human oversight of its outputs."
+- **GDPR, Article 22**: "Gives candidates the right not to be subject to a decision based solely on automated processing — a human must review it."
+
+Hover or click each badge to see the full gloss.
+
+---
+
+## Sovereignty Claim: Precisely Stated
+
+**Claude never receives raw PII.**
+
+### Which Fields Are Never Sent to Claude
+
+The following PII fields are **always** stripped before the prompt is built:
+- `full_name`
+- `email`
+- `phone`
+- `address`
+- `date_of_birth`
+- `gender`
+- `nationality`
+- `photo_placeholder`
+
+Additionally, free-text fields (work history, cover letter, education) are scrubbed of:
+- Any name mention (extracted from full_name)
+- Any age mention (regex patterns for "32 years old", "aged 29", "I'm 34", etc.)
+- Any pronoun (he, him, she, her, they, them, his, her, their, etc.)
+
+### What Claude Receives Instead
+
+The prompt contains only:
+1. The already-redacted candidate profile (PII fields absent, free text scrubbed)
+2. The job posting (never contains PII)
+3. The deterministic score result (only numbers and skill names, no candidate identity)
+4. An aggregate bias-check statement (group-level averages, no individual scores)
+
+### Proof
+
+**Test**: `backend/tests/test_brain.py::test_prompt_never_contains_raw_pii_field_names_or_values`
+
+This test:
+1. Takes a fully realistic PII-laden candidate (full name "Zara Al-Sayed", email, phone, address, etc.)
+2. Redacts it
+3. Mocks the subprocess call to capture the exact prompt string
+4. Asserts that the raw PII values (name, email, phone, etc.) **do not appear** in the literal prompt
+5. Asserts that the field names (e.g., `"full_name"`) **do not appear** in the literal prompt
+
+**Defensive fallback** (in `backend/app/brain.py::_assert_no_pii`):
+Even if the caller's redaction were buggy, the brain module refuses to build a prompt at all if any PII field key is present. It raises `ValueError("refusing to call Claude: PII fields leaked...")` before the subprocess is invoked.
+
+---
+
+## Tests
+
+### Run the Test Suite
+
+```bash
+cd backend
+python -m pytest tests -v
+```
+
+### Current Status: 33 Tests, All Passing
+
+```
+backend/tests/test_brain.py
+  test_happy_path_parses_correctly PASSED
+  test_cli_timeout_falls_back_cleanly PASSED
+  test_cli_malformed_json_falls_back_cleanly PASSED
+  test_cli_nonzero_exit_falls_back_cleanly PASSED
+  test_model_json_wrapped_in_code_fences_is_parsed PASSED
+  test_prompt_never_contains_raw_pii_field_names_or_values PASSED [SOVEREIGNTY PROOF]
+  test_pii_leak_in_redacted_profile_raises_before_calling_claude PASSED
+
+backend/tests/test_main.py (7 tests)
+  test_get_job_returns_seed_job PASSED
+  test_get_candidates_returns_all_not_started_initially PASSED
+  test_security_headers_present_on_every_response PASSED
+  test_data_residency_shape PASSED
+  test_run_agent_route_starts_background_task_when_idle PASSED
+  test_run_agent_route_reports_already_running PASSED
+  test_decide_* (override/reason validation) PASSED [6 tests]
+  test_audit_log_is_newest_first PASSED
+
+backend/tests/test_tools.py
+  test_pii_fields_fully_removed PASSED
+  test_name_age_and_pronoun_mentions_are_scrubbed_in_free_text PASSED
+  test_curly_apostrophe_age_mention_is_scrubbed PASSED
+  test_full_match_scores_near_100 PASSED
+  test_zero_match_scores_zero PASSED
+  test_score_candidate_is_deterministic PASSED
+  test_empty_requirement_lists_score_full_marks_no_zero_division PASSED
+  test_bias_check_suppresses_singleton_groups_and_withholds_avg_score PASSED [BIAS BUG PROOF]
+  test_bias_check_with_no_scored_candidates_for_a_group_is_skipped PASSED
+  test_flag_for_approval_sets_pending_review_never_final PASSED
+  test_log_to_audit_appends_jsonl_with_caller_supplied_ts PASSED
+  test_read_audit_log_skips_malformed_lines PASSED
+  test_read_audit_log_returns_empty_list_when_file_absent PASSED
+```
+
+### Most Important Tests
+
+1. **`test_bias_check_suppresses_singleton_groups_and_withholds_avg_score`**: Proves the k-anonymity fix. Groups of fewer than 3 candidates are combined into one "suppressed" bucket whose average score is **never computed** (genuinely withheld, not computed then hidden), preventing re-identification of individuals in tiny demographic groups.
+
+2. **`test_prompt_never_contains_raw_pii_field_names_or_values`**: Automated proof that the literal prompt string handed to Claude contains zero raw PII values and zero PII field names — the sovereignty claim is mechanically verified by the test harness.
+
+---
+
+## Scope: What's Out of Scope / Honest Limitations
+
+### By Design (Deliberate Trade-Offs)
+
+- **No metered API key**: This app uses the `claude` CLI (OAuth via Claude Pro) instead of `ANTHROPIC_API_KEY`. Tradeoff: bounded to your subscription quota; latency ~2–3s per candidate; cost modeled in SPEC_V2.md. Benefit: no API billing, no shared key in the environment, easier for a judge to run without secrets.
+
+- **One consolidated Claude call per candidate, not multi-round tool use**: See SPEC_V2.md § "Hard constraint discovered this session". A 5-round-trip loop would be 70+ CLI calls for 14 candidates. One call per candidate preserves sovereignty (still no PII sent) while keeping latency under 1 minute for a full demo run.
+
+- **No persistent database**: In-memory store only (candidate data, job posting, decisions). Audit log persists to disk as append-only JSONL (`backend/app/data/audit_log.jsonl`). Benefit: no schema, no migrations, judges can inspect the raw audit file. Limitation: restarting the backend wipes all decision state (not the audit log). Running a second time requires deleting `backend/app/data/audit_log.jsonl` or restarting fresh.
+
+- **No authentication on local dev servers**: Both backend and frontend accept any request from localhost. Auth is not the focus of this demo (human oversight is); it would be added in production via Entra ID (Azure) or another identity layer mentioned in `docs/architecture.md` (the production-target narrative).
+
+- **Scoring is deterministic, not ML-driven**: The 60/20/20 rubric is hard-coded, not learned. Benefit: fully explainable, reproducible, auditable. Limitation: judges cannot ask "what would happen if I tweak the weights" — the rubric is baked. Future versions could add tunable weights or swap in a real ML model while keeping the redaction and oversight layers.
+
+### Operational Notes
+
+- **Re-running the agent** requires restarting the backend (the in-memory store must be reset). Once a run completes and decisions are recorded in the audit log, running the agent again fetches any candidates not yet processed. Starting from scratch: delete `backend/app/data/audit_log.jsonl` and restart.
+
+- **Concurrency**: Claude calls are bounded to 3 simultaneous (via semaphore in `orchestrator.py`). With 14 candidates, a full run takes ~2–3 seconds per candidate × number of concurrent slots, or roughly 10–20 seconds total.
+
+- **No file uploads**: Candidate data is loaded from `backend/app/data/candidates.json` at startup. The 14 synthetic candidates are reused from the earlier v1 build — already diverse, already redaction-heavy, already validated.
+
+- **Browser refresh mid-demo**: The SSE event stream replays all events emitted so far, so refreshing the browser mid-run shows the full history up to that point, plus streams any new events as they happen.
+
+---
+
+## Architecture Files
+
+- **Backend**: `backend/app/main.py` (FastAPI routes), `backend/app/tools.py` (five real tools), `backend/app/brain.py` (Claude CLI interface), `backend/app/orchestrator.py` (agent loop), `backend/app/store.py` (in-memory state).
+- **Frontend**: `frontend/app/page.tsx` (main dashboard), `frontend/app/components/` (DataResidencyBanner, RedactionReveal, ApprovalGate, RegulationBadge, ReasoningFeed, CandidateCard, AuditLogView, ErrorBanner).
+- **Launcher**: `run.py` (one-command startup).
+- **Specification**: `SPEC_V2.md` (detailed rationale for design decisions), `CHALLENGE.md` (the original challenge brief and scenario choice).
+- **Production Target**: `docs/architecture.md` (EU-region Azure deployment with Confidential Compute, Customer-Managed Keys, Private Link, etc. — this demo is a proof-of-concept for that architecture).
+
+---
+
+## Files and Tools Involved
+
+### Data & Config
+
+- `backend/app/data/job.json` — The job posting (must-haves, nice-to-haves, experience requirement)
+- `backend/app/data/candidates.json` — 14 synthetic candidates with diverse demographics and redaction-triggering data
+- `backend/app/data/audit_log.jsonl` — Created at runtime, appended to on every decision
+
+### Backend Dependencies
+
+See `backend/requirements.txt`:
+- `fastapi`, `uvicorn[standard]` — HTTP server
+- `pydantic` — Request/response validation
+- `pytest`, `httpx` — Testing
+
+No ORM, no database client, no external API clients (Claude call via subprocess, not SDK).
+
+### Frontend Dependencies
+
+See `frontend/package.json`:
+- `next` 14.2.35 — App Router
+- `react` 18.3.1, `react-dom` 18.3.1
+- `tailwindcss` 3.4.3 — Styling (dark theme, custom tokens)
+- `typescript` 5.4.5
+
+---
+
+## Judges: How to Verify the Claims
+
+1. **"No PII ever reaches Claude"**: Read `backend/tests/test_brain.py::test_prompt_never_contains_raw_pii_field_names_or_values`. Run it. Inspect the test output — it captures the exact subprocess argv and asserts the prompt string.
+
+2. **"PII is redacted before the UI shows it"**: Click "PII redaction — before / after" on any candidate card. See the fields and text scrubbed.
+
+3. **"Bias is suppressed per k-anonymity"**: Run `python -m pytest backend/tests/test_tools.py::test_bias_check_suppresses_singleton_groups_and_withholds_avg_score -v`. The test proves singleton groups are withheld, not computed.
+
+4. **"Every decision requires human confirmation"**: Try clicking "Run Agent" and then waiting for candidates to appear. Each candidate will be in "pending_review" state. Try clicking "Accept" without entering a reviewer name — it will error. Try clicking "Override" without a reason — it will error. Enter your name and a reason; the decision records.
+
+5. **"The audit log is immutable"**: Look at `backend/app/data/audit_log.jsonl` after running the agent and making decisions. The file is append-only (each line is one JSON record). Inspect the `human_decision` events — they record the actor, decision, reason (if override), and `is_override` flag.
+
+6. **"Data stays local"**: The DataResidencyBanner shows "This machine — localhost". The API endpoint `GET /api/data-residency` returns zero PII external requests. No cloud backend is involved except the Claude CLI call, which is explicitly shown as "receives no PII fields".
+
+---
+
+## Summary
+
+This is a **working, end-to-end proof of concept** for sovereign, human-controlled AI in high-risk employment screening. It demonstrates:
+
+- **Concrete privacy**: PII redaction before any model call, with before/after UI proof.
+- **Audit trail**: Immutable JSONL log of every agent recommendation and human decision.
+- **Human veto**: No candidate outcome is final without named human approval; overrides require written justification.
+- **Regulatory mapping**: EU AI Act Art. 6 and GDPR Art. 22 cited in the UI, connected to the design (high-risk classification, duty of oversight, right not to be solely automated).
+- **Sovereignty hold**: Claude call never receives raw PII — proven by test.
+- **Transparent limitations**: No persistent database, bounded to subscription quota, all decisions reset on backend restart. These are acknowledged, not hidden.
+
+**Start with `python run.py`**. Everything else follows.
